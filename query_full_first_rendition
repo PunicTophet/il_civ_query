@@ -1,0 +1,101 @@
+import os
+import streamlit as st
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_pinecone import PineconeVectorStore
+from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+from langchain.chains import RetrievalQA
+from langchain.llms import OpenAI
+from langchain_openai.chat_models import ChatOpenAI
+import sentence_transformers
+from sentence_transformers import SentenceTransformer
+from pinecone import Pinecone
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.embeddings import OpenAIEmbeddings
+from langchain.llms import OpenAI
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+import numpy as np
+import getpass
+os.environ["OPENAI_API_KEY"] = XXXX
+os.environ["PINECONE_API_KEY"] = XXXX
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = XXXX
+
+connection_string = "XXXX"
+container_name = "XXXX"
+
+# Create a BlobServiceClient and ContainerClient
+blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+container_client = blob_service_client.get_container_client(container_name)
+
+# Get the list of blob names
+blob_names = [blob.name for blob in container_client.list_blobs()]
+
+# Download the content of filtered blobs
+bc_ilciv = []
+for blob_name in blob_names:
+    if blob_name.startswith("IL"):
+        blob_client = container_client.get_blob_client(blob_name)
+        bc_ilciv.append(blob_client.download_blob().readall().decode("utf-8"))
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+pc = Pinecone(api_key="f9def77a-99ae-4d43-b773-e626f8b6aa8b")
+index = pc.Index("il-legal-384")
+
+doc_embeddings = {}
+for text in bc_ilciv:
+    embedding = model.encode(text)
+    doc_embeddings[text] = embedding
+
+prompt_template = """
+Query: {query}
+
+Context:
+{context}
+
+Please provide a summarized answer to the query based on the context provided.
+
+Summarized Answer:
+"""
+
+# Initialize the LLM
+llm = OpenAI(temperature=0.2)
+
+# Create a prompt
+prompt = PromptTemplate(
+    input_variables=["query", "context"],
+    template=prompt_template,
+)
+
+chain = LLMChain(llm=llm, prompt=prompt)
+
+def main():
+    st.title("Illinois Legal Query App")
+    query = st.text_input("Enter your query:")
+
+    if query:
+        query_embedding = model.encode(query)
+
+        # Calculate the similarity scores
+        similarity_scores = {}
+        for text, embedding in doc_embeddings.items():
+            similarity_score = np.dot(embedding, query_embedding)
+            similarity_scores[text] = similarity_score
+
+        # Sort the documents based on similarity scores
+        sorted_docs = sorted(similarity_scores.items(), key=lambda x: x[1], reverse=True)
+
+        # Get the top-k most similar documents
+        top_k = 3
+        context_docs = [doc for doc, _ in sorted_docs[:top_k]]
+
+        # Generate the summarized answer
+        context_str = "\n".join(context_docs)
+        result = chain.run(query=query, context=context_str)
+
+        st.subheader("Query:")
+        st.write(query)
+        st.subheader("Summarized Answer:")
+        st.write(result)
+
+if __name__ == '__main__':
+    main()
